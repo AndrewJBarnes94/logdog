@@ -1,2 +1,2 @@
 # logdog
-parse alarm logs for patterns
+snig out patterns in log files
