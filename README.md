@@ -1,2 +1,2 @@
 # logdog
-snig out patterns in log files
+sniff out patterns in log files
