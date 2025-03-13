@@ -8,27 +8,31 @@ from tkinter import filedialog, messagebox
 from tkinter import ttk
 from Evtx.Evtx import Evtx
 from Evtx.Views import evtx_file_xml_view
+import mplcursors
 
-def find_word_in_file(file_path, word):
+def find_phrases_in_file(file_path, phrases):
     print(f"Processing text file: {file_path}")
     timestamps = []
+    lines = []
     try:
         with open(file_path, 'r') as file:
             for line in file:
-                if word in line:
-                    print(f"Found '{word}' in line: {line.strip()}")
+                if any(phrase in line for phrase in phrases):
+                    print(f"Found one of {phrases} in line: {line.strip()}")
                     timestamp_str = line.split()[0] + ' ' + line.split()[1]
                     timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S.%f')
                     timestamps.append(timestamp)
+                    lines.append(line.strip())
     except FileNotFoundError:
         print(f"ERROR: File not found - {file_path}")
     except Exception as e:
         print(f"ERROR: {e}")
-    return timestamps
+    return timestamps, lines
 
 def find_errors_in_evtx(file_path):
     print(f"Processing EVTX file: {file_path}")
     timestamps = []
+    lines = []
     record_count = 0
     error_count = 0
     max_records = 10000  # Set a limit to prevent excessive processing
@@ -50,6 +54,7 @@ def find_errors_in_evtx(file_path):
                 try:
                     timestamp = datetime.strptime(timestamp_str, '%Y-%m-%dT%H:%M:%S.%f')
                     timestamps.append(timestamp)
+                    lines.append(xml)
                 except ValueError:
                     print(f"Skipping invalid timestamp format: {timestamp_str}")
 
@@ -68,72 +73,84 @@ def find_errors_in_evtx(file_path):
         print(f"ERROR processing EVTX: {e}")
 
     print(f"Finished processing {record_count} records, {error_count} errors extracted from {file_path}")
-    return timestamps
+    return timestamps, lines
 
-def aggregate_timestamps_per_second(timestamps):
-    print(f"Aggregating {len(timestamps)} timestamps...")
-    aggregated = defaultdict(int)
-    for timestamp in timestamps:
-        rounded_timestamp = timestamp.replace(microsecond=0)
-        aggregated[rounded_timestamp] += 1
-    return aggregated
-
-def plot_fail_timestamps(aggregated_timestamps, color, label):
-    print(f"Plotting {len(aggregated_timestamps)} points for {label}")
-    if not aggregated_timestamps:
+def plot_fail_timestamps(ax, timestamps, lines, color, label, visible=True):
+    print(f"Plotting {len(timestamps)} points for {label}")
+    if not timestamps:
         print(f"WARNING: No timestamps to plot for {label}.")
         return
-    times = list(aggregated_timestamps.keys())
-    counts = list(aggregated_timestamps.values())
-    plt.plot(times, counts, 'o', color=color, label=label)
+    times = timestamps
+    counts = [1] * len(timestamps)  # Set the value to 1 for each timestamp
+    scatter = ax.scatter(times, counts, color=color, label=label, visible=visible)
+    cursor = mplcursors.cursor(scatter)
+    cursor.connect("add", lambda sel: update_text_area(lines[sel.index]))
+    return scatter
 
-def process_folder(folder_path, word, progress_var, total_files, processed_files):
+def update_text_area(text):
+    text_area.config(state=tk.NORMAL)
+    text_area.delete(1.0, tk.END)
+    text_area.insert(tk.END, text)
+    text_area.config(state=tk.DISABLED)
+
+def process_folder(folder_path, phrases, progress_var, total_files, processed_files):
     print(f"Scanning folder: {folder_path}")
     all_timestamps = []
+    all_lines = []
     files = os.listdir(folder_path)
     for filename in files:
         file_path = os.path.join(folder_path, filename)
         if os.path.isfile(file_path):
             print(f"Processing file: {file_path}")
             if file_path.lower().endswith('.txt'):
-                timestamps = find_word_in_file(file_path, word)
+                timestamps, lines = find_phrases_in_file(file_path, phrases)
             elif file_path.lower().endswith('.evtx'):
-                timestamps = find_errors_in_evtx(file_path)
+                timestamps, lines = find_errors_in_evtx(file_path)
             else:
                 print(f"Skipping unsupported file type: {file_path}")
                 continue
             all_timestamps.extend(timestamps)
+            all_lines.extend(lines)
         processed_files += 1
         progress_var.set(processed_files / total_files * 100)
         root.update_idletasks()
-    return all_timestamps, processed_files
+    return all_timestamps, all_lines, processed_files
 
-def plot_data(folders, word, progress_var):
+def plot_data(folders, phrases, progress_var):
     print("Starting plot data process...")
-    plt.figure(figsize=(10, 6))
+    global fig, ax, scatters
+    fig, ax = plt.subplots(figsize=(10, 6))
     
     total_files = sum(len(os.listdir(folder_path)) for folder_path, _, _ in folders)
     print(f"Total files to process: {total_files}")
     processed_files = 0
+    scatters = []
     
     for folder_info in folders:
         folder_path, color, label = folder_info
         print(f"Processing folder: {folder_path}")
-        all_fail_timestamps, processed_files = process_folder(folder_path, word, progress_var, total_files, processed_files)
+        all_fail_timestamps, all_lines, processed_files = process_folder(folder_path, phrases, progress_var, total_files, processed_files)
         
         if all_fail_timestamps:
-            aggregated_timestamps = aggregate_timestamps_per_second(all_fail_timestamps)
-            plot_fail_timestamps(aggregated_timestamps, color, label)
+            scatter = plot_fail_timestamps(ax, all_fail_timestamps, all_lines, color, label)
+            scatters.append((label, scatter))
     
-    plt.xlabel('Timestamp')
-    plt.ylabel('Occurrences')
-    plt.title('Occurrences over time')
-    plt.gca().xaxis.set_major_formatter(DateFormatter('%Y-%m-%d %H:%M:%S'))
+    ax.set_xlabel('Timestamp')
+    ax.set_ylabel('Occurrences')
+    ax.set_ylim(0, 2)  # Set y-axis limits to [0, 2]
+    ax.set_title(f"Occurrences of {'; '.join(phrases)} over time")
+    ax.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d %H:%M:%S'))
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.legend()
     plt.show()
     print("Plot completed.")
+
+def toggle_visibility(label):
+    for lbl, scatter in scatters:
+        if lbl == label:
+            scatter.set_visible(not scatter.get_visible())
+    plt.draw()
 
 def browse_folder():
     folder_selected = filedialog.askdirectory()
@@ -155,23 +172,31 @@ def add_folder():
     folder_path_var.set("")
     color_var.set("")
     label_var.set("")
+    
+    # Add a checkbox for showing/hiding the dataset
+    var = tk.BooleanVar(value=True)
+    checkbox = tk.Checkbutton(root, text=label, variable=var, command=lambda: toggle_visibility(label))
+    checkbox.grid(row=9 + len(folders), column=0, sticky=tk.W)
+    checkboxes.append(checkbox)
 
 def plot_button_clicked():
-    word = word_var.get()
+    phrases = [phrase.strip() for phrase in phrase_var.get().split('","')]
     
-    if not folders or not word:
+    if not folders or not phrases:
         messagebox.showerror("Error", "Please fill in all fields.")
         return
     
     progress_var.set(0)
-    print(f"Starting plot with word: {word}")
-    plot_data(folders, word, progress_var)
+    print(f"Starting plot with phrases: {phrases}")
+    plot_data(folders, phrases, progress_var)
 
 # Create the main window
 root = tk.Tk()
-root.title("Log File Plotter")
+root.title("Log Dog")
+root.geometry("800x600")
 
 folders = []
+checkboxes = []
 
 # UI Components
 tk.Label(root, text="Folder Path:").grid(row=0, column=0, sticky=tk.W)
@@ -192,9 +217,9 @@ tk.Button(root, text="Add Folder", command=add_folder).grid(row=3, column=1)
 folder_listbox = tk.Listbox(root, width=80, height=10)
 folder_listbox.grid(row=4, column=0, columnspan=3)
 
-tk.Label(root, text="Word to Search (for text files):").grid(row=5, column=0, sticky=tk.W)
-word_var = tk.StringVar()
-tk.Entry(root, textvariable=word_var, width=50).grid(row=5, column=1)
+tk.Label(root, text="Phrases to Search (comma-separated):").grid(row=5, column=0, sticky=tk.W)
+phrase_var = tk.StringVar()
+tk.Entry(root, textvariable=phrase_var, width=50).grid(row=5, column=1)
 
 tk.Button(root, text="Plot", command=plot_button_clicked).grid(row=6, column=1)
 
@@ -202,6 +227,16 @@ progress_var = tk.DoubleVar()
 progress_bar = ttk.Progressbar(root, variable=progress_var, maximum=100)
 progress_bar.grid(row=7, column=0, columnspan=3, sticky=tk.W+tk.E)
 
+# Text area for displaying information
+text_area = tk.Text(root, height=10, width=80, state=tk.DISABLED)
+text_area.grid(row=8, column=0, columnspan=3, pady=10)
+
 # Run the main loop
 print("Starting GUI...")
 root.mainloop()
+
+
+
+
+
+
